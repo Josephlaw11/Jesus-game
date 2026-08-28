@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>耶穌水上行 - 神蹟狂熱篇</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background-color: #1a2a6c;
+            touch-action: none; user-select: none; -webkit-user-select: none;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas { display: block; }
+        
+        #ui-layer {
+            position: absolute; top: 15px; left: 15px;
+            color: #fff; font-size: 18px; font-weight: bold;
+            pointer-events: none; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            line-height: 1.6;
+        }
+        .ui-large { font-size: 26px; color: #f1c40f; }
+        .ui-combo { color: #e74c3c; font-size: 20px; animation: pulse 0.5s infinite alternate; display: none; }
+        
+        #message-box {
+            position: absolute; top: 45%; left: 50%;
+            transform: translate(-50%, -50%); text-align: center;
+            background: rgba(255, 255, 255, 0.95); padding: 30px 40px;
+            border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            pointer-events: none; width: 80%; max-width: 350px;
+        }
+        #message-title { font-size: 30px; font-weight: bold; color: #2c3e50; margin-bottom: 15px; }
+        #message-subtitle { font-size: 16px; color: #444; line-height: 1.8; margin-bottom: 10px; }
+        
+        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.1); } }
+        
+        #flash-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: white; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        分數: <span id="score" class="ui-large">0</span><br>
+        拯救: <span id="saved">0</span> 人<br>
+        <span id="combo-text" class="ui-combo">🔥 <span id="combo">1</span>x 連擊!</span>
+    </div>
+    
+    <div id="message-box">
+        <div id="message-title">神蹟狂熱篇</div>
+        <div id="message-subtitle">
+            <b>[點擊]</b> 跳躍，空中再點可 <b>[二段跳]</b><br>
+            🌊 避開大浪，⛈️ 避開雷暴<br>
+            🙋🏻‍♂️ 救門徒，🐟 執五餅二魚<br>
+            🕊️ 聖靈白鴿 = 5秒無敵衝刺！
+        </div>
+        <div style="font-size: 22px; margin-top: 15px;">👉 點擊開始 👈</div>
+    </div>
+    
+    <div id="flash-screen"></div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const uiScore = document.getElementById('score');
+        const uiSaved = document.getElementById('saved');
+        const uiComboText = document.getElementById('combo-text');
+        const uiCombo = document.getElementById('combo');
+        const msgBox = document.getElementById('message-box');
+        const msgTitle = document.getElementById('message-title');
+        const msgSubtitle = document.getElementById('message-subtitle');
+        const flashScreen = document.getElementById('flash-screen');
+
+        let width, height, waterY;
+        let gameState = 'START'; 
+        let frames = 0, speed = 6, baseSpeed = 6;
+        let score = 0, savedCount = 0, combo = 0;
+        let entities = [], particles = [];
+
+        // 玩家狀態
+        const player = {
+            x: 0, y: 0, size: 50, vy: 0,
+            gravity: 0.7, jumpPower: -13,
+            jumps: 0, maxJumps: 2, 
+            invincible: 0, wobble: 0
+        };
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            width = canvas.width; height = canvas.height;
+            waterY = height * 0.7; 
+            
+            player.x = width * 0.15; 
+            player.size = Math.max(40, Math.min(width, height) * 0.12);
+            player.jumpPower = -(height * 0.017);
+            player.gravity = height * 0.0009;
+            baseSpeed = width * 0.012;
+            speed = baseSpeed;
+            
+            if (gameState === 'START') {
+                player.y = waterY - player.size;
+                drawBackground();
+                drawPlayer();
+            }
+        }
+        window.addEventListener('resize', resize);
+
+        function resetGame() {
+            player.y = waterY - player.size;
+            player.vy = 0; player.jumps = 0; player.invincible = 0;
+            entities = []; particles = [];
+            score = 0; savedCount = 0; combo = 0; frames = 0;
+            speed = baseSpeed;
+            uiScore.innerText = score; uiSaved.innerText = savedCount;
+            uiComboText.style.display = 'none';
+        }
+
+        // 點擊事件 (支援二段跳)
+        function handleTap(e) {
+            if (e) e.preventDefault(); 
+            if (gameState === 'START' || gameState === 'GAMEOVER') {
+                gameState = 'PLAYING';
+                msgBox.style.display = 'none';
+                resetGame();
+                requestAnimationFrame(loop);
+                return;
+            }
+            if (gameState === 'PLAYING' && player.jumps < player.maxJumps) {
+                player.vy = player.jumpPower;
+                player.jumps++;
+                createParticles(player.x + player.size/2, player.y + player.size, 'white', 10);
+            }
+        }
+        window.addEventListener('touchstart', handleTap, {passive: false});
+        window.addEventListener('mousedown', handleTap);
+
+        // 粒子系統 (水花、金光)
+        function createParticles(x, y, color, count) {
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 1) * 8,
+                    life: 1, color: color,
+                    size: Math.random() * 5 + 2
+                });
+            }
+        }
+
+        function updateParticles() {
+            for(let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx; p.y += p.vy;
+                p.vy += 0.3; p.life -= 0.03;
+                
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = Math.max(0, p.life);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        // 物件生成與碰撞
+        function manageEntities() {
+            let spawnRate = Math.max(40, 90 - Math.floor(frames / 300) * 5);
+            
+            if (frames % spawnRate === 0) {
+                let rand = Math.random();
+                let type, emoji, yPos, w, h;
+                
+                if (rand < 0.3) { // 30% 門徒
+                    type = 'good'; emoji = "🙋🏻‍♂️"; yPos = waterY - player.size;
+                    w = player.size * 0.7; h = player.size * 0.8;
+                } else if (rand < 0.45) { // 15% 五餅二魚
+                    type = 'good'; emoji = "🐟"; yPos = waterY - player.size * 1.5;
+                    w = player.size * 0.6; h = player.size * 0.6;
+                } else if (rand < 0.5) { // 5% 無敵白鴿
+                    type = 'powerup'; emoji = "🕊️"; yPos = waterY - player.size * 2.5;
+                    w = player.size * 0.8; h = player.size * 0.8;
+                } else if (rand < 0.7) { // 20% 雷暴雲 (空中)
+                    type = 'bad'; emoji = "⛈️"; yPos = waterY - player.size * 3;
+                    w = player.size * 1.2; h = player.size;
+                } else { // 30% 海浪
+                    type = 'wave'; emoji = ""; 
+                    h = player.size * (0.6 + Math.random() * 0.6);
+                    yPos = waterY - h; w = player.size * 0.8;
+                }
+
+                entities.push({ type, emoji, x: width, y: yPos, w, h, active: true });
+            }
+
+            for (let i = 0; i < entities.length; i++) {
+                let ent = entities[i];
+                if (!ent.active) continue;
+
+                // 速度調整 (無敵時背景加速)
+                let currentSpeed = player.invincible > 0 ? speed * 2 : speed;
+                ent.x -= currentSpeed;
+
+                // 繪製
+                if (ent.type === 'wave') {
+                    ctx.fillStyle = 'rgba(0, 150, 200, 0.9)';
+                    ctx.beginPath();
+                    ctx.moveTo(ent.x, waterY);
+                    ctx.lineTo(ent.x + ent.w/2, ent.y);
+                    ctx.lineTo(ent.x + ent.w, waterY);
+                    ctx.fill();
+                    ctx.fillStyle = 'white';
+                    ctx.beginPath();
+                    ctx.arc(ent.x + ent.w/2, ent.y, 8, 0, Math.PI*2);
+                    ctx.fill();
+                } else {
+                    let wobble = ent.type === 'powerup' ? Math.sin(frames*0.1)*10 : 0;
+                    ctx.font = `${ent.h}px Arial`;
+                    ctx.textAlign = "left";
+                    ctx.textBaseline = "top";
+                    ctx.fillText(ent.emoji, ent.x, ent.y + wobble);
+                }
+
+                // 碰撞判定 (縮細碰撞箱提高容錯)
+                let px = player.x + player.size * 0.2;
+                let py = player.y + player.size * 0.2;
+                let pw = player.size * 0.6;
+                let ph = player.size * 0.8;
+                
+                let cx = ent.x + ent.w * 0.2;
+                let cy = ent.y + ent.w * 0.2;
+                let cw = ent.w * 0.6;
+                let ch = ent.h * 0.6;
+
+                if (px < cx + cw && px + pw > cx && py < cy + ch && py + ph > cy) {
+                    if (ent.type === 'bad' || ent.type === 'wave') {
+                        if (player.invincible > 0) {
+                            // 無敵狀態撞碎障礙物
+                            ent.active = false;
+                            createParticles(ent.x, ent.y + ent.h/2, 'cyan', 15);
+                            score += 10;
+                        } else {
+                            gameOver();
+                        }
+                    } else if (ent.type === 'good') {
+                        ent.active = false;
+                        combo++;
+                        let pts = (ent.emoji === "🐟" ? 20 : 50) + (combo * 10);
+                        score += pts;
+                        if(ent.emoji === "🙋🏻‍♂️") savedCount++;
+                        
+                        uiScore.innerText = score; uiSaved.innerText = savedCount;
+                        uiCombo.innerText = combo;
+                        uiComboText.style.display = combo > 1 ? 'inline' : 'none';
+                        createParticles(ent.x, ent.y, 'gold', 15);
+                        
+                    } else if (ent.type === 'powerup') {
+                        ent.active = false;
+                        player.invincible = 300; // 5秒 (60fps * 5)
+                        flashScreen.style.opacity = '1';
+                        setTimeout(() => flashScreen.style.opacity = '0', 150);
+                        createParticles(player.x, player.y, 'white', 30);
+                    }
+                } else if (ent.x + ent.w < player.x && (ent.type === 'bad' || ent.type === 'wave') && ent.active) {
+                    // 成功避開
+                    ent.active = false; 
+                    score += 10;
+                    uiScore.innerText = score;
+                } else if (ent.x + ent.w < player.x && ent.type === 'good' && ent.active) {
+                    // Miss 咗寶物斷 Combo
+                    combo = 0;
+                    uiComboText.style.display = 'none';
+                }
+            }
+            entities = entities.filter(ent => ent.x + ent.w > -100);
+        }
+
+        function drawBackground() {
+            // 漸變天空
+            let sky = ctx.createLinearGradient(0, 0, 0, height);
+            sky.addColorStop(0, "#1a2a6c");
+            sky.addColorStop(0.5, "#b21f1f");
+            sky.addColorStop(1, "#fdbb2d");
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, width, height);
+
+            // 遠處雲朵視差滾動
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            for(let i=0; i<3; i++) {
+                let cx = ((frames * 0.5 + i * 400) % (width + 200)) - 100;
+                ctx.beginPath();
+                ctx.arc(width - cx, height * 0.3, 40 + i*10, 0, Math.PI*2);
+                ctx.arc(width - cx + 40, height * 0.3 + 10, 30, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            // 海水
+            ctx.fillStyle = 'rgba(15, 100, 180, 0.85)';
+            ctx.fillRect(0, waterY, width, height - waterY);
+            
+            // 無敵特效：水面發光
+            if (player.invincible > 0) {
+                ctx.fillStyle = 'rgba(255, 215, 0, 0.3)';
+                ctx.fillRect(0, waterY, width, height - waterY);
+            }
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, waterY);
+            ctx.lineTo(width, waterY);
+            ctx.stroke();
+        }
+
+        function updatePlayer() {
+            player.vy += player.gravity;
+            player.y += player.vy;
+
+            if (player.y + player.size >= waterY) {
+                player.y = waterY - player.size;
+                player.vy = 0;
+                player.jumps = 0;
+                // 跑步震動效果
+                player.wobble = Math.sin(frames * 0.3) * 5;
+            } else {
+                player.wobble = 0;
+            }
+
+            if (player.invincible > 0) player.invincible--;
+        }
+
+        function drawPlayer() {
+            // 無敵光環
+            if (player.invincible > 0) {
+                ctx.fillStyle = 'rgba(255, 215, 0, 0.5)';
+                ctx.beginPath();
+                ctx.arc(player.x + player.size/2, player.y + player.size/2, player.size * 0.8 + Math.sin(frames*0.5)*10, 0, Math.PI*2);
+                ctx.fill();
+                // 衝刺殘影
+                if (frames % 3 === 0) createParticles(player.x, player.y + player.size/2, 'gold', 2);
+            }
+
+            ctx.font = `${player.size}px Arial`;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            ctx.fillText("🧔🏽‍♂️", player.x, player.y + player.wobble);
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            msgTitle.innerText = "Game Over!";
+            msgSubtitle.innerHTML = 
+                `總分: <b style="color:#e74c3c; font-size:24px;">${score}</b><br>` +
+                `拯救門徒: <b>${savedCount}</b> 人<br><br>` +
+                `👉 點擊重新狂飆 👈`;
+            msgBox.style.display = 'block';
+        }
+
+        function loop() {
+            if (gameState !== 'PLAYING') return;
+            frames++;
+            
+            // 隨時間微調加速
+            if (frames % 600 === 0) speed += width * 0.0005;
+
+            drawBackground();
+            updatePlayer();
+            manageEntities();
+            updateParticles();
+            drawPlayer();
+
+            requestAnimationFrame(loop);
+        }
+
+        resize();
+    </script>
+</body>
+</html>
